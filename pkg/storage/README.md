@@ -8,10 +8,24 @@ This package provides an abstraction layer for different storage backends in Pho
 - **Multiple Backends**: Support for local filesystem and S3-compatible storage
 - **Flexible Configuration**: Configure storage through URLs or structured config
 - **Backward Compatibility**: Easy migration from legacy filesystem-based storage
+- **S3-Compatible**: Full support for AWS S3 and compatible services (MinIO, Ceph, etc.)
+- **URL-Based Configuration**: Simple configuration using standard URL format
+- **Environment Variable Support**: Easy configuration through environment variables
 
 ## Supported Storage Backends
 
-### Local Filesystem
+## Supported Storage Backends
+
+### 1. Local Filesystem
+
+Store files on the local filesystem. This is the default storage backend.
+
+#### Configuration Options
+
+- **Type**: `fs` (StorageTypeFS)
+- **Path**: Absolute path to the storage directory
+
+#### Example
 
 ```go
 import "github.com/photoprism/photoprism/pkg/storage"
@@ -26,25 +40,120 @@ storage, err := storage.New(context.Background(), storage.Config{
 })
 ```
 
-### S3-Compatible Storage
+### 2. S3-Compatible Storage
+
+Store files in an S3-compatible object storage service (AWS S3, MinIO, Ceph, etc.).
+
+#### Configuration Options
+
+- **Type**: `s3` (StorageTypeS3)
+- **Path**: S3 path in format `s3://bucket/prefix`
+- **S3 Configuration**:
+  - `Endpoint`: S3 service endpoint URL (default: AWS endpoint based on region)
+  - `Region`: AWS region (e.g., `us-east-1`)
+  - `AccessKeyID`: AWS access key ID
+  - `SecretAccessKey`: AWS secret access key
+  - `SessionToken`: Optional session token for temporary credentials
+  - `UsePathStyle`: Use path-style addressing (default: false for virtual-hosted style)
+  - `DisableSSL`: Disable SSL (not recommended for production)
+  - `UseAccelerate`: Use S3 Transfer Acceleration
+  - `UseDualStack`: Use dual-stack endpoint for IPv6
+  - `UseTransferAccel`: Use S3 Transfer Acceleration (deprecated, use UseAccelerate)
+
+#### URL Format
+
+```
+s3://[access_key:secret_key[:session_token]@]bucket/prefix[?param=value&...]
+```
+
+Supported URL parameters:
+- `region`: AWS region (e.g., `us-east-1`)
+- `endpoint`: Custom endpoint URL
+- `path_style`: Set to `true` to use path-style addressing
+- `disable_ssl`: Set to `true` to disable SSL
+- `use_accelerate`: Set to `true` to enable S3 Transfer Acceleration
+- `use_dualstack`: Set to `true` to use dual-stack endpoint
+
+#### Examples
 
 ```go
 import "github.com/photoprism/photoprism/pkg/storage"
 
-// Using URL format (with credentials in URL)
-storage, err := storage.ParseURL("s3://access_key:secret_key@bucket/path?region=us-east-1")
+// Basic configuration with credentials in URL
+storage, err := storage.ParseURL("s3://access_key:secret_key@my-bucket/photos?region=us-east-1")
 
-// Or using config
+// Using config with additional options
 storage, err := storage.New(context.Background(), storage.Config{
     Type: storage.StorageTypeS3,
-    Path: "s3://bucket/path",
+    Path: "s3://my-bucket/photos",
     S3: &storage.S3Config{
-        Endpoint:     "https://s3.amazonaws.com",
-        Region:       "us-east-1",
-        AccessKeyID:  "your-access-key",
+        Endpoint:        "https://s3.us-east-1.amazonaws.com",
+        Region:         "us-east-1",
+        AccessKeyID:    "your-access-key",
         SecretAccessKey: "your-secret-key",
+        UsePathStyle:   false,
+        UseAccelerate:  true,
     },
 })
+
+// Using environment variables
+// PHOTOPRISM_STORAGE_TYPE=s3
+// PHOTOPRISM_STORAGE_PATH=s3://my-bucket/photos
+// PHOTOPRISM_STORAGE_S3_REGION=us-east-1
+// PHOTOPRISM_STORAGE_S3_ACCESS_KEY_ID=your-access-key
+// PHOTOPRISM_STORAGE_S3_SECRET_ACCESS_KEY=your-secret-key
+storage, err := storage.NewFromEnv(context.Background())
+```
+
+#### Supported S3-Compatible Services
+
+The S3 storage backend is compatible with:
+- AWS S3
+- MinIO
+- Ceph Object Gateway
+- DigitalOcean Spaces
+- Google Cloud Storage (interoperability mode)
+- Alibaba Cloud OSS
+- And other S3-compatible services
+
+## Advanced Configuration
+
+### Environment Variables
+
+All storage configuration can be set via environment variables:
+
+```bash
+# Storage type (fs or s3)
+PHOTOPRISM_STORAGE_TYPE=fs
+
+# For filesystem storage
+PHOTOPRISM_STORAGE_PATH=/path/to/storage
+
+# For S3 storage
+PHOTOPRISM_STORAGE_PATH=s3://bucket/prefix
+PHOTOPRISM_STORAGE_S3_REGION=us-east-1
+PHOTOPRISM_STORAGE_S3_ACCESS_KEY_ID=your-access-key
+PHOTOPRISM_STORAGE_S3_SECRET_ACCESS_KEY=your-secret-key
+PHOTOPRISM_STORAGE_S3_ENDPOINT=https://s3.us-east-1.amazonaws.com
+PHOTOPRISM_STORAGE_S3_USE_PATH_STYLE=false
+PHOTOPRISM_STORAGE_S3_USE_ACCELERATE=false
+PHOTOPRISM_STORAGE_S3_USE_DUALSTACK=false
+PHOTOPRISM_STORAGE_S3_DISABLE_SSL=false
+```
+
+### HTTP/HTTPS S3 URLs
+
+The storage package can also parse HTTP/HTTPS URLs that point to S3 objects:
+
+```go
+// Virtual-hosted style URL
+storage, err := storage.ParseURL("https://my-bucket.s3.us-east-1.amazonaws.com/path/to/object.jpg")
+
+// Path-style URL
+storage, err := storage.ParseURL("https://s3.us-east-1.amazonaws.com/my-bucket/path/to/object.jpg")
+
+// Custom endpoint
+storage, err := storage.ParseURL("https://custom-endpoint.com/my-bucket/path/to/object.jpg")
 ```
 
 ## Usage Example
