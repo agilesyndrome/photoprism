@@ -25,6 +25,22 @@ type Options struct {
 	Copyright              string        `json:"-"`
 	PartnerID              string        `yaml:"-" json:"-" flag:"partner-id"`
 	AuthMode               string        `yaml:"AuthMode" json:"-" flag:"auth-mode"`
+
+	// S3 Storage Configuration
+	S3Endpoint             string        `yaml:"S3Endpoint" json:"S3Endpoint" flag:"s3-endpoint"`
+	S3AccessKey            string        `yaml:"S3AccessKey" json:"S3AccessKey" flag:"s3-access-key"`
+	S3SecretKey            string        `yaml:"S3SecretKey" json:"S3SecretKey" flag:"s3-secret-key"`
+	S3Region               string        `yaml:"S3Region" json:"S3Region" flag:"s3-region"`
+	S3Bucket               string        `yaml:"S3Bucket" json:"S3Bucket" flag:"s3-bucket"`
+	S3PathStyle            bool          `yaml:"S3PathStyle" json:"S3PathStyle" flag:"s3-path-style"`
+	S3DisableSSL           bool          `yaml:"S3DisableSSL" json:"S3DisableSSL" flag:"s3-disable-ssl"`
+	S3UseAccelerate        bool          `yaml:"S3UseAccelerate" json:"S3UseAccelerate" flag:"s3-use-accelerate"`
+	S3UseDualStack         bool          `yaml:"S3UseDualStack" json:"S3UseDualStack" flag:"s3-use-dual-stack"`
+	S3UseTransferAccel     bool          `yaml:"S3UseTransferAccel" json:"S3UseTransferAccel" flag:"s3-use-transfer-accel"`
+	S3UseCustomCA          string        `yaml:"S3UseCustomCA" json:"S3UseCustomCA" flag:"s3-use-custom-ca"`
+	S3UseCustomCABundle    string        `yaml:"S3UseCustomCABundle" json:"S3UseCustomCABundle" flag:"s3-custom-ca-bundle"`
+	S3UseSharedConfig      bool          `yaml:"S3UseSharedConfig" json:"S3UseSharedConfig" flag:"s3-use-shared-config"`
+	S3UseLegacyListObjects bool          `yaml:"S3UseLegacyListObjects" json:"S3UseLegacyListObjects" flag:"s3-use-legacy-list-objects"`
 	Public                 bool          `yaml:"Public" json:"-" flag:"public"`
 	NoHub                  bool          `yaml:"-" json:"-" flag:"no-hub"`
 	AdminUser              string        `yaml:"AdminUser" json:"-" flag:"admin-user"`

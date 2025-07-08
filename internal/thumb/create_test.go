@@ -1,15 +1,23 @@
 package thumb
 
 import (
+	"bytes"
 	"errors"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/service/s3/s3iface"
 	"github.com/disintegration/imaging"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 
+	"github.com/photoprism/photoprism/internal/config"
 	"github.com/photoprism/photoprism/pkg/fs"
+	"github.com/photoprism/photoprism/pkg/storage"
 )
 
 func TestResampleOptions(t *testing.T) {
@@ -399,6 +407,17 @@ func TestFromCache(t *testing.T) {
 	})
 }
 
+// MockS3Client is a mock S3 client for testing
+type MockS3Client struct {
+	s3iface.S3API
+	mock.Mock
+}
+
+func (m *MockS3Client) PutObject(input *s3.PutObjectInput) (*s3.PutObjectOutput, error) {
+	args := m.Called(input)
+	return args.Get(0).(*s3.PutObjectOutput), args.Error(1)
+}
+
 func TestCreate(t *testing.T) {
 	t.Run("tile_500", func(t *testing.T) {
 		tile500 := Sizes[Tile500]
@@ -528,5 +547,72 @@ func TestCreate(t *testing.T) {
 
 		assert.Equal(t, "thumb: height has an invalid value (-3)", err.Error())
 		assert.NotNil(t, resized)
+	})
+
+	t.Run("with storage backend", func(t *testing.T) {
+		// Create a test image
+		src := "testdata/example.jpg"
+		dst := "testdata/example.storage_test.jpg"
+
+		assert.FileExists(t, src)
+
+		// Create a mock S3 client
+		mockSvc := &MockS3Client{}
+
+		// Set up expectations for the mock
+		mockSvc.On("PutObject", mock.AnythingOfType("*s3.PutObjectInput")).
+			Return(&s3.PutObjectOutput{}, nil)
+
+		// Create a test storage backend
+		storageCfg := storage.Config{
+			Endpoint:        "s3.amazonaws.com",
+			AccessKey:       "test-access-key",
+			SecretKey:       "test-secret-key",
+			Bucket:          "test-bucket",
+			Region:          "us-east-1",
+			UseSSL:          true,
+			PathPrefix:      "test/prefix",
+			PathCrypto:      false,
+			PathLower:       false,
+			UseProxy:        false,
+			ProxyURL:        "",
+			ProxyInsecure:   false,
+			ProxyCACert:     "",
+			ClientCert:      "",
+			ClientKey:       "",
+			ClientInsecure:  false,
+			ClientTLS:       false,
+			ClientTLSVerify: false,
+		}
+
+		// Create a test config with the storage backend
+		cfg := config.TestConfig()
+		cfg.SetThumbPath("s3://test-bucket/test/prefix")
+
+		// Mock the S3 client factory to return our mock
+		originalS3ClientFactory := storage.S3ClientFactory
+		storage.S3ClientFactory = func(cfg storage.Config) (s3iface.S3API, error) {
+			return mockSvc, nil
+		}
+		defer func() { storage.S3ClientFactory = originalS3ClientFactory }()
+
+		// Load the test image
+		img, err := imaging.Open(src, imaging.AutoOrientation(true))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Call Create with the storage backend
+		resized, err := Create(img, dst, 100, 100)
+
+		// Verify the results
+		assert.NoError(t, err)
+		assert.NotNil(t, resized)
+
+		// Verify the mock was called as expected
+		mockSvc.AssertExpectations(t)
+
+		// Verify the file was not created on the local filesystem
+		assert.NoFileExists(t, dst)
 	})
 }

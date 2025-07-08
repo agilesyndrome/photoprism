@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/user"
@@ -13,6 +14,7 @@ import (
 	"github.com/photoprism/photoprism/pkg/clean"
 	"github.com/photoprism/photoprism/pkg/fs"
 	"github.com/photoprism/photoprism/pkg/rnd"
+	"github.com/photoprism/photoprism/pkg/storage"
 )
 
 // binPaths stores known executable paths.
@@ -159,10 +161,16 @@ func (c *Config) CreateDirectories() error {
 	}
 
 	// Create thumbnail cache storage path if it doesn't exist yet.
-	if dir := c.ThumbCachePath(); dir == "" {
+	thumbPath := c.ThumbCachePath()
+	if thumbPath == "" {
 		return notFoundError("thumbs")
-	} else if err := fs.MkdirAll(dir); err != nil {
-		return createError(dir, err)
+	}
+
+	// Only create the directory if we're using the filesystem
+	if u, err := url.Parse(thumbPath); err == nil && (u.Scheme == "" || u.Scheme == "file") {
+		if err := fs.MkdirAll(thumbPath); err != nil {
+			return createError(thumbPath, err)
+		}
 	}
 
 	// Create and initialize config directory.
@@ -232,6 +240,26 @@ func (c *Config) CreateDirectories() error {
 	}
 
 	return nil
+}
+
+// Config represents a configuration entity with shared application settings.
+type Config struct {
+	once      sync.Once
+	options   *Options
+	settings  *Settings
+	settingsMutex sync.RWMutex
+
+	sessionAge time.Duration
+	sessionTimeout time.Duration
+	sessionCache time.Duration
+
+	// Caches
+	fileMutex sync.Mutex
+	fileCache map[string]string
+
+	// Storage backends
+	storageMutex    sync.RWMutex
+	storageBackends map[string]storage.Storage // Cache for storage backends
 }
 
 // ConfigPath returns the config path.
@@ -319,33 +347,235 @@ func (c *Config) CaseInsensitive() (result bool, err error) {
 	return fs.CaseInsensitive(storagePath)
 }
 
-// OriginalsPath returns the originals.
+// OriginalsStorage returns the storage backend for originals.
+// It creates a new storage backend if one doesn't exist for the current configuration.
+func (c *Config) OriginalsStorage() (storage.Storage, error) {
+	// Initialize storage backends map if needed
+	c.storageMutex.Lock()
+	if c.storageBackends == nil {
+		c.storageBackends = make(map[string]storage.Storage)
+	}
+	c.storageMutex.Unlock()
+
+	// Check if we already have a storage backend for originals
+	c.storageMutex.RLock()
+	if backend, exists := c.storageBackends["originals"]; exists {
+		c.storageMutex.RUnlock()
+		return backend, nil
+	}
+	c.storageMutex.RUnlock()
+
+	// Get the originals path or URL
+	path := c.OriginalsPath()
+
+	// Parse the path/URL to determine the storage type
+	u, err := url.Parse(path)
+	if err != nil {
+		// If parsing as URL fails, treat it as a filesystem path
+		u = &url.URL{
+			Scheme: "file",
+			Path:   path,
+		}
+	}
+
+	// Create a new storage backend based on the URL scheme
+	var backend storage.Storage
+
+	switch u.Scheme {
+	case "s3":
+		// For S3, we need to extract bucket and path from the URL
+		bucket := u.Host
+		path := strings.TrimPrefix(u.Path, "/")
+
+		// Create S3 storage backend
+		backend, err = storage.NewS3Storage(
+			c.options.S3Endpoint,
+			c.options.S3AccessKey,
+			c.options.S3SecretKey,
+			bucket,
+			path,
+			c.options.S3Region,
+			storage.S3Options{
+				PathStyle:            c.options.S3PathStyle,
+				DisableSSL:           c.options.S3DisableSSL,
+				UseAccelerate:        c.options.S3UseAccelerate,
+				UseDualStack:         c.options.S3UseDualStack,
+				UseTransferAccel:     c.options.S3UseTransferAccel,
+				UseCustomCA:          c.options.S3UseCustomCA,
+				UseCustomCABundle:    c.options.S3UseCustomCABundle,
+				UseSharedConfig:      c.options.S3UseSharedConfig,
+				UseLegacyListObjects: c.options.S3UseLegacyListObjects,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create S3 storage backend: %v", err)
+		}
+
+	case "file", "":
+		// For filesystem storage
+		backend = storage.NewFSStorage(u.Path)
+
+	default:
+		return nil, fmt.Errorf("unsupported storage scheme: %s", u.Scheme)
+	}
+
+	// Cache the storage backend
+	c.storageMutex.Lock()
+	c.storageBackends["originals"] = backend
+	c.storageMutex.Unlock()
+
+	return backend, nil
+}
+
+// OriginalsPath returns the originals path or URL.
+// For backward compatibility, it returns a filesystem path by default.
 func (c *Config) OriginalsPath() string {
 	if c.options.OriginalsPath == "" {
 		// Try to find the right directory by iterating through a list.
 		c.options.OriginalsPath = fs.FindDir(fs.OriginalPaths)
 	}
 
+	// If the path is already a URL, return it as-is
+	if u, err := url.Parse(c.options.OriginalsPath); err == nil && u.Scheme != "" {
+		return c.options.OriginalsPath
+	}
+
+	// For backward compatibility, return an absolute filesystem path
 	return fs.Abs(c.options.OriginalsPath)
 }
 
 // OriginalsDeletable checks if originals can be deleted.
+// It verifies that the storage is writable and the delete feature is enabled in settings.
 func (c *Config) OriginalsDeletable() bool {
-	return !c.ReadOnly() && fs.Writable(c.OriginalsPath()) && c.Settings().Features.Delete
+	if c.ReadOnly() || !c.Settings().Features.Delete {
+		return false
+	}
+
+	// Get the storage backend
+	storage, err := c.OriginalsStorage()
+	if err != nil {
+		log.Errorf("config: failed to get storage backend: %v", err)
+		return false
+	}
+
+	// Check if the storage is writable
+	writable, err := storage.IsWritable()
+	if err != nil {
+		log.Errorf("config: failed to check if storage is writable: %v", err)
+		return false
+	}
+
+	return writable
 }
 
-// ImportPath returns the import directory.
+// ImportStorage returns the storage backend for imports.
+// It creates a new storage backend if one doesn't exist for the current configuration.
+func (c *Config) ImportStorage() (storage.Storage, error) {
+	// Initialize storage backends map if needed
+	c.storageMutex.Lock()
+	if c.storageBackends == nil {
+		c.storageBackends = make(map[string]storage.Storage)
+	}
+	c.storageMutex.Unlock()
+
+	// Check if we already have a storage backend for imports
+	c.storageMutex.RLock()
+	if backend, exists := c.storageBackends["imports"]; exists {
+		c.storageMutex.RUnlock()
+		return backend, nil
+	}
+	c.storageMutex.RUnlock()
+
+	// Get the import path or URL
+	path := c.ImportPath()
+
+	// Parse the path/URL to determine the storage type
+	u, err := url.Parse(path)
+	if err != nil {
+		// If parsing as URL fails, treat it as a filesystem path
+		u = &url.URL{
+			Scheme: "file",
+			Path:   path,
+		}
+	}
+
+	// Create a new storage backend based on the URL scheme
+	var backend storage.Storage
+
+	switch u.Scheme {
+	case "s3":
+		// For S3, we need to extract bucket and path from the URL
+		bucket := u.Host
+		path := strings.TrimPrefix(u.Path, "/")
+
+		// Create S3 storage backend
+		backend, err = storage.NewS3Storage(
+			c.options.S3Endpoint,
+			c.options.S3AccessKey,
+			c.options.S3SecretKey,
+			bucket,
+			path,
+			c.options.S3Region,
+			storage.S3Options{
+				PathStyle:            c.options.S3PathStyle,
+				DisableSSL:           c.options.S3DisableSSL,
+				UseAccelerate:        c.options.S3UseAccelerate,
+				UseDualStack:         c.options.S3UseDualStack,
+				UseTransferAccel:     c.options.S3UseTransferAccel,
+				UseCustomCA:          c.options.S3UseCustomCA,
+				UseCustomCABundle:    c.options.S3UseCustomCABundle,
+				UseSharedConfig:      c.options.S3UseSharedConfig,
+				UseLegacyListObjects: c.options.S3UseLegacyListObjects,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create S3 storage backend for imports: %v", err)
+		}
+
+	case "file", "":
+		// For filesystem storage
+		backend = storage.NewFSStorage(u.Path)
+
+	default:
+		return nil, fmt.Errorf("unsupported storage scheme for imports: %s", u.Scheme)
+	}
+
+	// Cache the storage backend
+	c.storageMutex.Lock()
+	c.storageBackends["imports"] = backend
+	c.storageMutex.Unlock()
+
+	return backend, nil
+}
+
+// ImportPath returns the import directory path or URL.
+// For backward compatibility, it returns a filesystem path by default.
 func (c *Config) ImportPath() string {
 	if c.options.ImportPath == "" {
 		// Try to find the right directory by iterating through a list.
 		c.options.ImportPath = fs.FindDir(fs.ImportPaths)
 	}
 
+	// If the path is already a URL, return it as-is
+	if u, err := url.Parse(c.options.ImportPath); err == nil && u.Scheme != "" {
+		return c.options.ImportPath
+	}
+
+	// For backward compatibility, return an absolute filesystem path
 	return fs.Abs(c.options.ImportPath)
 }
 
 // ImportDest returns the relative originals path to which the files should be imported by default.
+// For S3 storage, this returns the path component of the S3 URL.
+// For filesystem storage, it returns a cleaned user path.
 func (c *Config) ImportDest() string {
+	// If the import destination is an S3 URL, return the path component
+	if u, err := url.Parse(c.options.ImportDest); err == nil && u.Scheme == "s3" {
+		// Remove leading slash from path
+		return strings.TrimPrefix(u.Path, "/")
+	}
+
+	// For filesystem paths, use the existing cleaning logic
 	return clean.UserPath(c.options.ImportDest)
 }
 
@@ -534,9 +764,101 @@ func (c *Config) MediaFileCachePath(hash string) string {
 	return dir
 }
 
-// ThumbCachePath returns the thumbnail storage path.
+// ThumbStorage returns the storage backend for thumbnails.
+// It creates a new storage backend if one doesn't exist for the current configuration.
+func (c *Config) ThumbStorage() (storage.Storage, error) {
+	// Initialize storage backends map if needed
+	c.storageMutex.Lock()
+	if c.storageBackends == nil {
+		c.storageBackends = make(map[string]storage.Storage)
+	}
+	c.storageMutex.Unlock()
+
+	// Check if we already have a storage backend for thumbnails
+	c.storageMutex.RLock()
+	if backend, exists := c.storageBackends["thumbnails"]; exists {
+		c.storageMutex.RUnlock()
+		return backend, nil
+	}
+	c.storageMutex.RUnlock()
+
+	// Get the thumbnails path or URL
+	path := c.ThumbCachePath()
+
+	// Parse the path/URL to determine the storage type
+	u, err := url.Parse(path)
+	if err != nil {
+		// If parsing as URL fails, treat it as a filesystem path
+		u = &url.URL{
+			Scheme: "file",
+			Path:   path,
+		}
+	}
+
+	// Create a new storage backend based on the URL scheme
+	var backend storage.Storage
+
+	switch u.Scheme {
+	case "s3":
+		// For S3, we need to extract bucket and path from the URL
+		bucket := u.Host
+		path := strings.TrimPrefix(u.Path, "/")
+
+		// Create S3 storage backend
+		backend, err = storage.NewS3Storage(
+			c.options.S3Endpoint,
+			c.options.S3AccessKey,
+			c.options.S3SecretKey,
+			bucket,
+			path,
+			c.options.S3Region,
+			storage.S3Options{
+				PathStyle:            c.options.S3PathStyle,
+				DisableSSL:           c.options.S3DisableSSL,
+				UseAccelerate:        c.options.S3UseAccelerate,
+				UseDualStack:         c.options.S3UseDualStack,
+				UseTransferAccel:     c.options.S3UseTransferAccel,
+				UseCustomCA:          c.options.S3UseCustomCA,
+				UseCustomCABundle:    c.options.S3UseCustomCABundle,
+				UseSharedConfig:      c.options.S3UseSharedConfig,
+				UseLegacyListObjects: c.options.S3UseLegacyListObjects,
+			},
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create S3 storage backend for thumbnails: %v", err)
+		}
+
+	case "file", "":
+		// For filesystem storage
+		backend = storage.NewFSStorage(u.Path)
+
+	default:
+		return nil, fmt.Errorf("unsupported storage scheme for thumbnails: %s", u.Scheme)
+	}
+
+	// Cache the storage backend
+	c.storageMutex.Lock()
+	c.storageBackends["thumbnails"] = backend
+	c.storageMutex.Unlock()
+
+	return backend, nil
+}
+
+// ThumbCachePath returns the thumbnail storage path or URL.
+// For backward compatibility, it returns a filesystem path by default.
 func (c *Config) ThumbCachePath() string {
-	return filepath.Join(c.CachePath(), "thumbnails")
+	// If a custom thumbnails path is not set, use the default path under the cache directory
+	if c.options.ThumbPath == "" {
+		return filepath.Join(c.CachePath(), "thumbnails")
+	}
+
+	// If the path is already a URL, return it as-is
+	if u, err := url.Parse(c.options.ThumbPath); err == nil && u.Scheme != "" {
+		return c.options.ThumbPath
+	}
+
+	// For backward compatibility, return an absolute filesystem path
+	return fs.Abs(c.options.ThumbPath)
 }
 
 // StoragePath returns the path for generated files like cache and index.

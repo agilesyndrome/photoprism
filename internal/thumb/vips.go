@@ -2,17 +2,21 @@ package thumb
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 
 	"github.com/davidbyttow/govips/v2/vips"
 
+	"github.com/photoprism/photoprism/internal/config"
 	"github.com/photoprism/photoprism/pkg/clean"
 	"github.com/photoprism/photoprism/pkg/fs"
+	"github.com/photoprism/photoprism/pkg/storage"
 )
 
 // Vips generates a new thumbnail with the requested size and returns the file name and a buffer with the image bytes,
 // or an error if thumbnail generation failed. For more information on libvips, see https://github.com/libvips/libvips.
+// If storage is provided, it will be used for saving the thumbnail.
 func Vips(imageName string, imageBuffer []byte, hash, thumbPath string, width, height int, opts ...ResampleOption) (thumbName string, thumbBuffer []byte, err error) {
 	if len(hash) < 4 {
 		return "", nil, fmt.Errorf("thumb: invalid file hash %s", clean.Log(hash))
@@ -102,9 +106,17 @@ func Vips(imageName string, imageBuffer []byte, hash, thumbPath string, width, h
 		return "", thumbBuffer, err
 	}
 
-	// Write thumbnail to file.
-	if err = os.WriteFile(thumbName, thumbBuffer, fs.ModeFile); err != nil {
-		log.Debugf("vips: %s in %s (write thumbnail to file)", err, clean.Log(filepath.Base(imageName)))
+	// Check if we have a storage backend
+	if storage := thumbStorage(thumbPath); storage != nil {
+		// Use storage backend to save the thumbnail
+		err = storage.Write(thumbName, thumbBuffer, fs.ModeFile)
+	} else {
+		// Fall back to direct filesystem access for backward compatibility
+		err = os.WriteFile(thumbName, thumbBuffer, fs.ModeFile)
+	}
+
+	if err != nil {
+		log.Debugf("vips: %s in %s (write thumbnail to storage)", err, clean.Log(filepath.Base(imageName)))
 		return "", thumbBuffer, err
 	}
 
@@ -112,6 +124,34 @@ func Vips(imageName string, imageBuffer []byte, hash, thumbPath string, width, h
 }
 
 // VipsImportParams provides parameters for opening files with libvips.
+// thumbStorage returns the appropriate storage backend for the given thumbPath.
+// If the thumbPath is an S3 URL, it returns the S3 storage backend.
+// Otherwise, it returns nil to use the filesystem.
+func thumbStorage(thumbPath string) storage.Storage {
+	if thumbPath == "" {
+		return nil
+	}
+
+	// Check if the path is an S3 URL
+	if u, err := url.Parse(thumbPath); err == nil && u.Scheme == "s3" {
+		// Get the config from the global instance
+		conf := config.Global()
+		if conf == nil {
+			return nil
+		}
+		
+		// Get the storage backend for thumbnails
+		storage, err := conf.ThumbStorage()
+		if err != nil {
+			log.Warnf("thumb: failed to get storage backend for %s: %v", thumbPath, err)
+			return nil
+		}
+		return storage
+	}
+	
+	return nil
+}
+
 func VipsImportParams() *vips.ImportParams {
 	params := &vips.ImportParams{}
 	params.AutoRotate.Set(true)
