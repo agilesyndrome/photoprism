@@ -64,8 +64,6 @@ require (
 	golang.org/x/time v0.12.0
 )
 
-require github.com/go-ldap/ldap/v3 v3.4.11
-
 require (
 	github.com/prometheus/client_golang v1.22.0
 	github.com/prometheus/common v0.65.0
@@ -93,7 +91,6 @@ require (
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358 // indirect
 	github.com/KyleBanks/depth v1.2.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/boombuler/barcode v1.0.2 // indirect
@@ -106,8 +103,7 @@ require (
 	github.com/dsoprea/go-utility/v2 v2.0.0-20221003172846-a3e1774ef349 // indirect
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/gin-contrib/sse v1.1.0 // indirect
-	github.com/go-asn1-ber/asn1-ber v1.5.8-0.20250403174932-29230038a667 // indirect
-	github.com/go-jose/go-jose/v4 v4.0.5 // indirect
+	github.com/go-jose/go-jose/v4 v4.1.6 // indirect
 	github.com/go-logr/logr v1.4.2 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-openapi/jsonpointer v0.21.1 // indirect
@@ -174,6 +170,6 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 )
 
-go 1.23.7
+go 1.24.0
 
 toolchain go1.24.1
